@@ -25,8 +25,6 @@ import random
 
 import numpy as np
 import torch
-import time
-
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
@@ -73,11 +71,7 @@ def train(args, train_dataset, model, tokenizer):
     """ Train the model """
 
     args.train_batch_size = args.per_device_train_batch_size
-    if args.local_rank != -1:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = RandomSampler(train_dataset)
-
+    train_sampler = RandomSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
 
     if args.max_steps > 0:
@@ -111,8 +105,6 @@ def train(args, train_dataset, model, tokenizer):
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
-    iteration_timings, losses = [], []
-
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
@@ -121,7 +113,6 @@ def train(args, train_dataset, model, tokenizer):
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            start_time = time.perf_counter()
             model.train()
             batch = tuple(t.to(args.device) for t in batch)
             inputs = {'input_ids':      batch[0],
@@ -140,37 +131,12 @@ def train(args, train_dataset, model, tokenizer):
             if args.fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
+                torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
             else:
                 ##################################################
                 # TODO(cos568): perform backward pass here (expect one line of code)
                 loss.backward()
                 ##################################################
-
-            if args.local_rank != -1:
-                for param in model.parameters():
-                    if param.grad is not None:
-                        # Gather gradients to rank 0
-                        grad = param.grad.detach()
-                        gather_list = (
-                            [torch.zeros_like(grad) for _ in range(args.world_size)]
-                            if args.local_rank == 0
-                            else None
-                        )
-                        torch.distributed.gather(grad, gather_list, dst=0)
-
-                        # Average and scatter
-                        if args.local_rank == 0:
-                            avg_grad = torch.mean(torch.stack(gather_list), dim=0)
-                            scatter_list = [avg_grad] * args.world_size
-                        else:
-                            scatter_list = None
-
-                        torch.distributed.scatter(grad, scatter_list, src=0)
-                        param.grad.copy_(grad)  # Update gradients
-
-            if args.fp16:
-                torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
-            else:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
             tr_loss += loss.item()
@@ -183,11 +149,6 @@ def train(args, train_dataset, model, tokenizer):
                 model.zero_grad()
                 global_step += 1
 
-            end_time = time.perf_counter()
-            if step > 0:
-                iteration_timings.append(end_time - start_time)
-            losses.append(loss.item())
-
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
@@ -199,20 +160,6 @@ def train(args, train_dataset, model, tokenizer):
         # TODO(cos568): call evaluate() here to get the model performance after every epoch. (expect one line of code)
         evaluate(args, model, tokenizer)
         ##################################################
-
-    if iteration_timings:
-        avg_time = sum(iteration_timings) / len(iteration_timings)
-        logger.info(f"Rank {args.local_rank} - Average time per iteration (after first): {avg_time:.4f}s")
-    else:
-        logger.info("No iterations timed (only first iteration ran).")
-
-    rank = 0 if args.local_rank == -1 else args.local_rank
-    os.makedirs(args.output_dir, exist_ok=True)
-    loss_file = os.path.join(args.output_dir, f"losses_rank_{rank}.txt")
-    with open(loss_file, "w") as f:
-        for loss in losses:
-            f.write(f"{loss}\n")
-    logger.info("Losses saved to %s", loss_file)
 
     return global_step, tr_loss / global_step
 
@@ -404,17 +351,6 @@ def main():
                              "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="For distributed training: local_rank. If single-node training, local_rank defaults to -1.")
-
-    parser.add_argument("--master_ip", type=str, default="",
-                        help="IP address of the master node (rank 0)")
-    parser.add_argument("--master_port", type=str, default="12355",
-                        help="Port for distributed training")
-    parser.add_argument("--world_size", type=int, default=1,
-                        help="Total number of workers/nodes")
-    parser.add_argument("--local_rank", type=int, default=-1,
-                        help="Local rank for distributed training")
-
-
     args = parser.parse_args()
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
@@ -423,15 +359,6 @@ def main():
     # set up (distributed) training
     args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     args.n_gpu = torch.cuda.device_count()
-
-    if args.local_rank != -1:
-        backend = "gloo"
-        torch.distributed.init_process_group(
-            backend=backend,
-            init_method=f"tcp://{args.master_ip}:{args.master_port}",
-            world_size=args.world_size,
-            rank=args.local_rank,
-        )
 
     # Setup logging
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
