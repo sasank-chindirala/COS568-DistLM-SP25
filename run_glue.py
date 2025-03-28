@@ -149,24 +149,13 @@ def train(args, train_dataset, model, tokenizer):
             if args.local_rank != -1:
                 for param in model.parameters():
                     if param.grad is not None:
-                        # Gather gradients to rank 0
-                        grad = param.grad.detach()
-                        gather_list = (
-                            [torch.zeros_like(grad) for _ in range(args.world_size)]
-                            if args.local_rank == 0
-                            else None
+                        # Sum gradients across all nodes
+                        torch.distributed.all_reduce(
+                            param.grad.data,
+                            op=torch.distributed.ReduceOp.SUM
                         )
-                        torch.distributed.gather(grad, gather_list, dst=0)
-
-                        # Average and scatter
-                        if args.local_rank == 0:
-                            avg_grad = torch.mean(torch.stack(gather_list), dim=0)
-                            scatter_list = [avg_grad] * args.world_size
-                        else:
-                            scatter_list = None
-
-                        torch.distributed.scatter(grad, scatter_list, src=0)
-                        param.grad.copy_(grad)  # Update gradients
+                        # Average gradients
+                        param.grad.data /= args.world_size
 
             if args.fp16:
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
