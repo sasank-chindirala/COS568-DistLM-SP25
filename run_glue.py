@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import time
 import csv
+import sys
 
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
@@ -45,6 +46,10 @@ from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
                                   XLNetTokenizer)
 
 from pytorch_transformers import AdamW, WarmupLinearSchedule
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+sys.path.insert(0, parent_dir)
 
 from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
