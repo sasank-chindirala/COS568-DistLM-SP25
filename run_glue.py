@@ -178,9 +178,9 @@ def train(args, train_dataset, model, tokenizer):
 
                             traffic_per_iteration += num_elements * element_size * 2 * (args.world_size - 1)
 
-                            logger.info(
-                                f"Traffic per iteration: {traffic_per_iteration / 1e6:.2f} MB"
-                            )
+                    logger.info(
+                        f"Traffic per iteration: {traffic_per_iteration / 1e6:.2f} MB"
+                    )
 
 
                 for param in model.parameters():
