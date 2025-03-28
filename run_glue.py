@@ -419,8 +419,8 @@ def main():
         raise ValueError("Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(args.output_dir))
 
     # set up (distributed) training
-    args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    args.n_gpu = torch.cuda.device_count()
+    args.device = "cpu"
+    args.n_gpu = 0
 
     if args.local_rank != -1:
         backend = "gloo"
