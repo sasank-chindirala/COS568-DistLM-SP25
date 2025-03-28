@@ -146,17 +146,6 @@ def train(args, train_dataset, model, tokenizer):
                 loss.backward()
                 ##################################################
 
-            if args.local_rank != -1:
-                for param in model.parameters():
-                    if param.grad is not None:
-                        # Sum gradients across all nodes
-                        torch.distributed.all_reduce(
-                            param.grad.data,
-                            op=torch.distributed.ReduceOp.SUM
-                        )
-                        # Average gradients
-                        param.grad.data /= args.world_size
-
             if args.fp16:
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
             else:
@@ -457,6 +446,9 @@ def main():
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
+
+    if args.local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(model)
 
     model.to(args.device)
 
