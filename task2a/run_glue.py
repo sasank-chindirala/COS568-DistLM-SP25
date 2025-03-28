@@ -26,6 +26,7 @@ import random
 import numpy as np
 import torch
 import time
+import sys
 
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
@@ -44,6 +45,10 @@ from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
                                   XLNetTokenizer)
 
 from pytorch_transformers import AdamW, WarmupLinearSchedule
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+sys.path.insert(0, parent_dir)
 
 from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
@@ -142,14 +147,13 @@ def train(args, train_dataset, model, tokenizer):
                     scaled_loss.backward()
             else:
                 ##################################################
-                # TODO(cos568): perform backward pass here (expect one line of code)
                 loss.backward()
                 ##################################################
 
             if args.local_rank != -1:
                 for param in model.parameters():
                     if param.grad is not None:
-                        # Gather gradients to rank 0
+
                         grad = param.grad.detach()
                         gather_list = (
                             [torch.zeros_like(grad) for _ in range(args.world_size)]
@@ -158,7 +162,7 @@ def train(args, train_dataset, model, tokenizer):
                         )
                         torch.distributed.gather(grad, gather_list, dst=0)
 
-                        # Average and scatter
+
                         if args.local_rank == 0:
                             avg_grad = torch.mean(torch.stack(gather_list), dim=0)
                             scatter_list = [avg_grad] * args.world_size
@@ -166,7 +170,7 @@ def train(args, train_dataset, model, tokenizer):
                             scatter_list = None
 
                         torch.distributed.scatter(grad, scatter_list, src=0)
-                        param.grad.copy_(grad)  # Update gradients
+                        param.grad.copy_(grad)
 
             if args.fp16:
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
@@ -176,7 +180,6 @@ def train(args, train_dataset, model, tokenizer):
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 ##################################################
-                # TODO(cos568): perform a single optimization step (parameter update) by invoking the optimizer (expect one line of code)
                 optimizer.step()
                 ##################################################
                 scheduler.step() # Update learning rate schedule
@@ -196,7 +199,6 @@ def train(args, train_dataset, model, tokenizer):
             break
         
         ##################################################
-        # TODO(cos568): call evaluate() here to get the model performance after every epoch. (expect one line of code)
         evaluate(args, model, tokenizer)
         ##################################################
 
@@ -461,7 +463,6 @@ def main():
     tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
     
     ##################################################
-    # TODO(cos568): load the model using from_pretrained. Remember to pass in `config` as an argument.
     # If you pass in args.model_name_or_path (e.g. "bert-base-cased"), the model weights file will be downloaded from HuggingFace. (expect one line of code)
     model = model_class.from_pretrained(args.model_name_or_path, config=config)
     ##################################################

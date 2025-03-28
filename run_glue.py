@@ -149,11 +149,9 @@ def train(args, train_dataset, model, tokenizer):
                     scaled_loss.backward()
             else:
                 ##################################################
-                # TODO(cos568): perform backward pass here (expect one line of code)
                 loss.backward()
                 ##################################################
 
-            # --- Task 4: Profile gradient communication ---
             if args.local_rank != -1:
                 if step == 0:
                     traffic_per_iteration = 0
@@ -161,13 +159,11 @@ def train(args, train_dataset, model, tokenizer):
                         if param.grad is not None:
                             grad = param.grad.data
 
-                            # Record tensor metadata
                             num_elements = grad.numel()
                             dtype = grad.dtype
-                            element_size = grad.element_size()  # Bytes per element
+                            element_size = grad.element_size()
                             tensor_bytes = num_elements * element_size
 
-                            # Log for debugging
                             logger.info(
                                 f"Shape: {grad.shape}, "
                                 f"Dtype: {dtype}, "
@@ -175,17 +171,17 @@ def train(args, train_dataset, model, tokenizer):
                                 f"Size: {tensor_bytes / 1e6:.2f} MB"
                             )
 
-                            traffic_per_iteration += tensor_bytes * 2
+                            traffic_per_iteration += num_elements * element_size * 2 * (args.world_size - 1)
 
 
                 for param in model.parameters():
                     if param.grad is not None:
-                        # Sum gradients across all nodes
+
                         torch.distributed.all_reduce(
                             param.grad.data,
                             op=torch.distributed.ReduceOp.SUM
                         )
-                        # Average gradients
+
                         param.grad.data /= args.world_size
 
                 epoch_traffic = num_iterations * traffic_per_iteration
@@ -198,7 +194,6 @@ def train(args, train_dataset, model, tokenizer):
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 ##################################################
-                # TODO(cos568): perform a single optimization step (parameter update) by invoking the optimizer (expect one line of code)
                 optimizer.step()
                 ##################################################
                 scheduler.step() # Update learning rate schedule
@@ -233,7 +228,6 @@ def train(args, train_dataset, model, tokenizer):
 
 
         ##################################################
-        # TODO(cos568): call evaluate() here to get the model performance after every epoch. (expect one line of code)
         evaluate(args, model, tokenizer)
         ##################################################
 
@@ -508,7 +502,6 @@ def main():
     tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
 
     ##################################################
-    # TODO(cos568): load the model using from_pretrained. Remember to pass in `config` as an argument.
     # If you pass in args.model_name_or_path (e.g. "bert-base-cased"), the model weights file will be downloaded from HuggingFace. (expect one line of code)
     model = model_class.from_pretrained(args.model_name_or_path, config=config)
     ##################################################
