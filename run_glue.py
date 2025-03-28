@@ -126,6 +126,7 @@ def train(args, train_dataset, model, tokenizer):
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
         epoch_traffic = 0  # Reset per-epoch traffic counter
+        num_iterations = len(epoch_iterator)
         for step, batch in enumerate(epoch_iterator):
             start_time = time.perf_counter()
             model.train()
@@ -154,27 +155,27 @@ def train(args, train_dataset, model, tokenizer):
 
             # --- Task 4: Profile gradient communication ---
             if args.local_rank != -1:
-                iter_traffic = 0
-                for param in model.parameters():
-                    if param.grad is not None:
-                        grad = param.grad.data
+                if step == 0:
+                    traffic_per_iteration = 0
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            grad = param.grad.data
 
-                        # Record tensor metadata
-                        num_elements = grad.numel()
-                        dtype = grad.dtype
-                        element_size = grad.element_size()  # Bytes per element
-                        tensor_bytes = num_elements * element_size
+                            # Record tensor metadata
+                            num_elements = grad.numel()
+                            dtype = grad.dtype
+                            element_size = grad.element_size()  # Bytes per element
+                            tensor_bytes = num_elements * element_size
 
-                        # Log for debugging
-                        logger.info(
-                            f"Rank {args.local_rank} - "
-                            f"Shape: {grad.shape}, "
-                            f"Dtype: {dtype}, "
-                            f"Elements: {num_elements}, "
-                            f"Size: {tensor_bytes / 1e6:.2f} MB"
-                        )
+                            # Log for debugging
+                            logger.info(
+                                f"Shape: {grad.shape}, "
+                                f"Dtype: {dtype}, "
+                                f"Elements: {num_elements}, "
+                                f"Size: {tensor_bytes / 1e6:.2f} MB"
+                            )
 
-                        iter_traffic += tensor_bytes
+                            traffic_per_iteration += tensor_bytes * 2
 
 
                 for param in model.parameters():
@@ -187,7 +188,7 @@ def train(args, train_dataset, model, tokenizer):
                         # Average gradients
                         param.grad.data /= args.world_size
 
-                epoch_traffic += iter_traffic  # Accumulate per-iteration traffic
+                epoch_traffic = num_iterations * traffic_per_iteration
 
             if args.fp16:
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
