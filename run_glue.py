@@ -26,6 +26,7 @@ import random
 import numpy as np
 import torch
 import time
+import csv
 
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
@@ -113,6 +114,10 @@ def train(args, train_dataset, model, tokenizer):
 
     iteration_timings, losses = [], []
 
+    # Add variables to track communication
+    communication_stats = []  # Stores stats per epoch
+    current_epoch_traffic = 0  # Bytes communicated in current epoch
+
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
@@ -120,6 +125,7 @@ def train(args, train_dataset, model, tokenizer):
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        epoch_traffic = 0  # Reset per-epoch traffic counter
         for step, batch in enumerate(epoch_iterator):
             start_time = time.perf_counter()
             model.train()
@@ -145,6 +151,43 @@ def train(args, train_dataset, model, tokenizer):
                 # TODO(cos568): perform backward pass here (expect one line of code)
                 loss.backward()
                 ##################################################
+
+            # --- Task 4: Profile gradient communication ---
+            if args.local_rank != -1:
+                iter_traffic = 0
+                for param in model.parameters():
+                    if param.grad is not None:
+                        grad = param.grad.data
+
+                        # Record tensor metadata
+                        num_elements = grad.numel()
+                        dtype = grad.dtype
+                        element_size = grad.element_size()  # Bytes per element
+                        tensor_bytes = num_elements * element_size
+
+                        # Log for debugging
+                        logger.info(
+                            f"Rank {args.local_rank} - "
+                            f"Shape: {grad.shape}, "
+                            f"Dtype: {dtype}, "
+                            f"Elements: {num_elements}, "
+                            f"Size: {tensor_bytes / 1e6:.2f} MB"
+                        )
+
+                        iter_traffic += tensor_bytes
+
+
+                for param in model.parameters():
+                    if param.grad is not None:
+                        # Sum gradients across all nodes
+                        torch.distributed.all_reduce(
+                            param.grad.data,
+                            op=torch.distributed.ReduceOp.SUM
+                        )
+                        # Average gradients
+                        param.grad.data /= args.world_size
+
+                epoch_traffic += iter_traffic  # Accumulate per-iteration traffic
 
             if args.fp16:
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
@@ -172,7 +215,22 @@ def train(args, train_dataset, model, tokenizer):
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
-        
+
+        # Log epoch-level stats
+        logger.info(
+            f"Expected Traffic: {epoch_traffic / 1e9:.2f} GB "
+            f"(Batch size: {args.per_device_train_batch_size})"
+        )
+
+        # Save stats for CSV
+        communication_stats.append({
+            "batch_size": args.per_device_train_batch_size,
+            "world_size": args.world_size,
+            "total_bytes": epoch_traffic,
+            "expected_gb": epoch_traffic / 1e9
+        })
+
+
         ##################################################
         # TODO(cos568): call evaluate() here to get the model performance after every epoch. (expect one line of code)
         evaluate(args, model, tokenizer)
@@ -191,6 +249,16 @@ def train(args, train_dataset, model, tokenizer):
         for loss in losses:
             f.write(f"{loss}\n")
     logger.info("Losses saved to %s", loss_file)
+
+    # Save communication stats to CSV
+    if args.local_rank in [-1, 0]:  # Only rank 0 or non-distributed
+        os.makedirs(args.output_dir, exist_ok=True)
+        csv_path = os.path.join(args.output_dir, "communication_stats.csv")
+        with open(csv_path, "w") as f:
+            writer = csv.DictWriter(f, fieldnames=communication_stats[0].keys())
+            writer.writeheader()
+            writer.writerows(communication_stats)
+        logger.info(f"Communication stats saved to {csv_path}")
 
     return global_step, tr_loss / global_step
 
@@ -280,7 +348,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         label_list = processor.get_labels()
         if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
             # HACK(label indices are swapped in RoBERTa pretrained model)
-            label_list[1], label_list[2] = label_list[2], label_list[1] 
+            label_list[1], label_list[2] = label_list[2], label_list[1]
         examples = processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir)
         features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode,
             cls_token_at_end=bool(args.model_type in ['xlnet']),            # xlnet has a cls token at the end
@@ -437,7 +505,7 @@ def main():
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     config = config_class.from_pretrained(args.config_name if args.config_name else args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
     tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
-    
+
     ##################################################
     # TODO(cos568): load the model using from_pretrained. Remember to pass in `config` as an argument.
     # If you pass in args.model_name_or_path (e.g. "bert-base-cased"), the model weights file will be downloaded from HuggingFace. (expect one line of code)
@@ -446,9 +514,6 @@ def main():
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
-    if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(model)
 
     model.to(args.device)
 
