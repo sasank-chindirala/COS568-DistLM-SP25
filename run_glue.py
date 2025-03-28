@@ -411,8 +411,6 @@ def main():
                         help="Port for distributed training")
     parser.add_argument("--world_size", type=int, default=1,
                         help="Total number of workers/nodes")
-    parser.add_argument("--local_rank", type=int, default=-1,
-                        help="Local rank for distributed training")
 
 
     args = parser.parse_args()
